@@ -12,6 +12,7 @@ static DaisyPatch patch;
 bool first = true;  //first loop (sets length)
 bool rec   = false; //currently recording
 bool play  = false; //currently playing
+std::string controlLabelStrs[] = {"d/w", "amp", "~", "cmp"};
 std::string modeStrs[] = {"stopped", "playing", "recording"};
 
 int   pos = 0;
@@ -20,6 +21,7 @@ int                 mod = MAX_SIZE;
 int                 len = 0;
 float drywet = 0;
 float inLevel = 0;
+float compensation = 0;
 bool res = false;
 
 // taken from the private vars in daisy_patch.h
@@ -122,6 +124,7 @@ void Controls()
 
     drywet = patch.controls[patch.CTRL_1].Process();
     inLevel = patch.controls[patch.CTRL_2].Process();
+    compensation = patch.controls[patch.CTRL_4].Process();
 
     UpdateButtons();
 
@@ -134,7 +137,7 @@ void Controls()
 
 void WriteBuffer(float* in, size_t i)
 {
-    buf[pos] = (buf[pos] + in[i]) * 0.5;
+    buf[pos] = (buf[pos] * compensation + (in[i] * inLevel) * compensation);
     if(first)
     {
 	len++;
@@ -166,7 +169,7 @@ void NextSamples(float &output, float* in, size_t i)
 
     if (!rec)
     {
-        output = ((output * drywet) + (in[i] * (1 -drywet))) * 0.5;
+        output = ((output * drywet) + ((in[i] * inLevel) * (1 -drywet)));
     }
 }
 
@@ -183,8 +186,8 @@ void DisplayTwoThirdsBars(bool invert)
         // Graph Knobs
         size_t barwidth, barspacing;
         size_t curx, cury;
-        barwidth   = 15;
-        barspacing = 20;
+        barwidth   = 8;
+        barspacing = 24;
         patch.display.Fill(off);
         // Bars for all four knobs.
         for(size_t i = 0; i < DaisyPatch::CTRL_LAST; i++)
@@ -203,9 +206,21 @@ void DisplayTwoThirdsBars(bool invert)
                 }
             }
         }
+        // rec / play mode
         char* currModeStr = rec ? &modeStrs[2][0] : (play ? &modeStrs[1][0] : &modeStrs[0][0]);
-        patch.display.SetCursor(0,0);
+        patch.display.SetCursor(0,9);
         patch.display.WriteString(currModeStr, Font_6x8, true);
+
+        // knob labels
+        patch.display.SetCursor(0, 0);
+        patch.display.WriteString(&controlLabelStrs[0][0], Font_6x8, true);
+        patch.display.SetCursor(32, 0);
+        patch.display.WriteString(&controlLabelStrs[1][0], Font_6x8, true);
+        patch.display.SetCursor(64, 0);
+        patch.display.WriteString(&controlLabelStrs[2][0], Font_6x8, true);
+        patch.display.SetCursor(96, 0);
+        patch.display.WriteString(&controlLabelStrs[3][0], Font_6x8, true);
+
         patch.display.Update();
         screen_update_last_   = dsy_system_getnow();
     }

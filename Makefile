@@ -3,6 +3,7 @@ TARGET = ex_Looper
 
 # Sources
 CPP_SOURCES = Looper.cpp
+# asm (".global _printf_float");
 
 # Library Locations
 LIBDAISY_DIR = ../../libdaisy

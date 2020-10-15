@@ -7,54 +7,62 @@
 #define VOICE_LENGTH_SECONDS 1
 #define MAX_RECORD_SIZE (SAMPLE_RATE * 60 * 5) // 5 minutes of floats at 48 khz
 #define VOICE_SIZE (SAMPLE_RATE / VOICE_LENGTH_SECONDS) // 
+#define INVERT_SCREEN true
 
 enum Params {
-    DRY_WET_XFADE = 0,
+    MIX_XFADE = 0,
     INPUT_AMP = 1,
-    SPD_VAR = 2,
+    LOOP_AMP = 2,
     RND_AMT = 3,
     RECORD_TOGGLE = 4,
     PLAY_TOGGLE = 5,
     CLEAR_BTN = 6,
 };
 
+std::string controlLabelStrs[]  = {"mix", "inp", "lop", "rnd", "rec", "ply", "clr"};
+std::string modeStrs[]          = {"X", ">"};
+
 using namespace daisysp;
 using namespace daisy;
 
 static DaisyPatch patch;
 
-int selectedParamIdx = 0;
-int numParams = 7;
-bool selectedParamEntered = false;
-bool first = true;  //first loop (sets length)
-bool rec   = false; //currently recording
-bool play  = false; //currently playing
-bool invert = true;
-bool noFill = invert ? false : true;
-bool fill = invert ? true : false;
-
-std::string controlLabelStrs[] = {"d/w", "amp", "spd", "rnd", "rec", "ply", "clr"};
-std::string modeStrs[] = {"X", ">"};
-
-int   pos = 0;
-float DSY_SDRAM_BSS buf[MAX_RECORD_SIZE];
-int                 mod = MAX_RECORD_SIZE;
-int                 len = 0;
-float drywet = 0;
-float inLevel = 0;
-float compensation = 0;
-bool res = false;
-
 // taken from the private vars in daisy_patch.h
 uint32_t screen_update_last_, screen_update_period_;
+
+float DSY_SDRAM_BSS buf[MAX_RECORD_SIZE];
+
+int   selectedParamIdx          = 0; // the currently selected parameter
+int   numParams                 = 7; // number of parameters
+bool  editingSelectedParam      = false; // selecting a control with a numeric value and clicking the encoder allows turning the encoder to change the value
+bool  first                     = true;  // first loop (sets length)
+bool  rec                       = false; // true = currently recording
+bool  play                      = false; // true = currently playing
+bool  syncRecordPlay            = false;
+bool  bufferReset               = false; // reset/clear loop mode toggle
+bool  allowBufferReset          = true;  // variable used to stop repeated resets while holding down encoder
+bool  positive                  = INVERT_SCREEN ? false : true; // draws text, lines, shapes, pixels on the background
+bool  negative                  = INVERT_SCREEN ? true : false; // fills the background, if used for text, prints text in an inverted box (i.e. if text is selected)
+int   playPosition              = 0;
+int   recordPosition            = 0;
+int   loopLength                = MAX_RECORD_SIZE;
+int   recordingLength           = 0;
+// when recording, the input signal goes to the loop, but not the output
+// when not recording, the input goes to the output, but not the loop
+float xFadeMix                  = 0.5; // output mix of loop and input signal
+float inputLevel                = 0;   // input amplitude level of the input 
+float loopLevel                 = 0;   // input amplitude level of the loop
 
 void ResetBuffer();
 void Controls();
 
 void NextSamples(float &output, float* in, size_t i);
 void DisplayControls();
-void floatToPercent(char* buff, float val);
 bool selected(int idx);
+bool recordToggled();
+bool playToggled();
+bool resettingBuffer();
+void floatToPercent(char* buff, float val);
 
 static void AudioCallback(float **in, float **out, size_t size)
 {
@@ -94,35 +102,43 @@ int main(void)
 //Resets the buffer
 void ResetBuffer()
 {
-
-    res   = false;
-    rec   = false;
     first = true;
-    pos   = 0;
-    len   = 0;
-    for(int i = 0; i < mod; i++)
+    bufferReset = true; // this is only set for the clear button's icon 
+    recordPosition = 0;
+    recordingLength = 0;
+
+    // set buffer to all 0's
+    for(int i = 0; i < MAX_RECORD_SIZE; i++)
     {
         buf[i] = 0;
     }
-    mod   = MAX_RECORD_SIZE;
+    loopLength = MAX_RECORD_SIZE;
+    allowBufferReset = false; // reset won't repeat while the encoder is held down
 }
 
 void UpdateButtons()
 {
     // encoder held
-    if(patch.encoder.TimeHeldMs() >= 1000)
+    if(patch.encoder.TimeHeldMs() >= 850)
     {
-
+        if(selected(Params::PLAY_TOGGLE)) {
+            if(!play && !rec) // length is set when recording has ended for the 'first' loop 
+            {
+                syncRecordPlay = true;
+            }
+        }
     }
     // encoder pressed - plays recording
     if(patch.encoder.FallingEdge())
     {
         if(selected(Params::RECORD_TOGGLE)) {
-            if(first && rec)
+            if(first && rec) // length is set when recording has ended for the 'first' loop 
             {
                 first = false;
-                mod   = len;
-                len   = 0;
+            }
+            if(!rec && !play && syncRecordPlay) {
+                play = !play;
+                syncRecordPlay = false;
             }
             rec = !rec;
         }
@@ -130,12 +146,15 @@ void UpdateButtons()
             play = !play;
         }
         if(selected(Params::CLEAR_BTN)) {
-            res = true;
+            bufferReset = false;
+            allowBufferReset = true;
         }
     }
-    if(patch.encoder.RisingEdge()){
+    if(patch.encoder.RisingEdge()) {
         if(selected(Params::CLEAR_BTN)) {
-            ResetBuffer();
+            if(allowBufferReset) {
+                ResetBuffer();
+            }
         }
     }
     //encoder changes the selected param
@@ -149,130 +168,141 @@ void Controls()
     patch.UpdateAnalogControls();
     patch.DebounceControls();
 
-    drywet = patch.controls[patch.CTRL_1].Process();
-    inLevel = patch.controls[patch.CTRL_2].Process();
-    compensation = patch.controls[patch.CTRL_4].Process();
+    xFadeMix = patch.controls[patch.CTRL_1].Process();
+    inputLevel = patch.controls[patch.CTRL_2].Process();
+    loopLevel = patch.controls[patch.CTRL_3].Process();
 
     UpdateButtons();
 }
 
 void WriteBuffer(float* in, size_t i)
 {
-    buf[pos] = buf[pos] * 0.75 + (in[i]) * 0.75;
-    if(first)
-    {
-        len++;
+    buf[recordPosition] = (buf[playPosition] * loopLevel) + (in[i] * inputLevel);
+    if(first) {
+        recordingLength++;
+        loopLength = recordingLength;
     }
 }
 
 void NextSamples(float &output, float* in, size_t i)
 {
-    if (rec)
-    {
+    if (rec) {
+        // record the input into the loop
         WriteBuffer(in, i);
     }
+    // send the loop to the output
+    output = buf[playPosition]; // output is just the loop signal now
     
-    output = buf[pos];
-    
-    //automatic looptime
-    if(len >= MAX_RECORD_SIZE)
-    {
+    // automatic looptime
+    if(recordingLength >= MAX_RECORD_SIZE) {
         first = false;
-        mod   = MAX_RECORD_SIZE;
-        len   = 0;
+        loopLength = MAX_RECORD_SIZE;
+        recordingLength = 0;
     }
     
-    if(play)
-    {
-        pos++;
-        pos %= mod;
+    if(play) {
+        playPosition++;
+        playPosition %= loopLength;
+    }
+    if(rec && play) {
+        recordPosition = playPosition;
+    } else if(rec) {
+        // **Strange Feature** additive punch in when recording while playback stopped
+        recordPosition++;
+        recordPosition %= recordingLength;
     }
 
-    if (!rec)
-    {
-        output = ((output * drywet) + ((in[i] * inLevel) * (1 -drywet)));
+    // when recording, the input is not going to play thru output
+    if(rec) {
+        output = output * xFadeMix; // output is the loop output adjusted by the xFade mix
+    }
+    // when recording stops, the input is going to play thru output
+    // TODO:: set loopLevel to 1.0 when recording stops (depends on knob value takeover mode)
+    if(!rec) {
+        output = ((output * loopLevel) * xFadeMix) + ((in[i] * inputLevel) * (1 - xFadeMix));
     }
 }
 
 // top left is y:0 x:0
-// This will render the display with the controls as vertical bars
+// This will render the display with control values as vertical bars
 void DisplayControls()
 {
     size_t maxHeight = SSD1309_HEIGHT / 2;
+    bool recToggle = recordToggled();
     
     if(dsy_system_getnow() - screen_update_last_ > screen_update_period_) {
         // Graph Knob values
         size_t barWidth, barSpacing;
         size_t barsWidth, barsBottom;
+        float  currentCtrlValue;
+        size_t currentBarHeight;
         barWidth   = 15;
         barSpacing = 5;
-        patch.display.Fill(fill);
+        patch.display.Fill(negative);
         // Bars for all four knobs.
         for(size_t i = 0; i < DaisyPatch::CTRL_LAST; i++) {
-            float  currentCtrlValue;
-            size_t currentBarHeight;
             barsWidth            = (barSpacing * i + 1) + (barWidth * i);
             barsBottom           = SSD1309_HEIGHT - 2; // start at the top! (bottom) (64)
-            currentCtrlValue    = patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(i));
-            currentBarHeight    = (currentCtrlValue * maxHeight);
+            currentCtrlValue     = patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(i));
+            currentBarHeight     = (currentCtrlValue * maxHeight);
             for(size_t j = maxHeight; j > 0; j--) {
                 for(size_t k = 0; k < barWidth; k++) {
                     // bottom half
                     if((j > currentBarHeight && j != 1) && k % 3 == 0) {
-                        patch.display.DrawPixel(barsWidth + k, barsBottom - j, noFill);
+                        patch.display.DrawPixel(barsWidth + k, barsBottom - j, positive);
                     }
                     // top half
                     if((j < currentBarHeight || j <= 1) && k % 3 != 0) {
-                        patch.display.DrawPixel(barsWidth + k, barsBottom - j, noFill);
+                        patch.display.DrawPixel(barsWidth + k, barsBottom - j, positive);
                     }
                     // lip
                     if((j < 1) && k % 3 != 0) {
-                        patch.display.DrawPixel(barsWidth + k, barsBottom - j, noFill);
+                        patch.display.DrawPixel(barsWidth + k, barsBottom - j, positive);
                     }
                     // debug pixel
-                    // patch.display.DrawPixel(90, maxHeight, noFill);
-                    // patch.display.DrawPixel(100, (barsBottom - j), noFill);
-                    // patch.display.DrawPixel(110, barsBottom - 1, noFill);
-                    // patch.display.DrawPixel(127, currentBarHeight, noFill);
+                    // patch.display.DrawPixel(90, maxHeight, positive);
+                    // patch.display.DrawPixel(100, (barsBottom - j), positive);
+                    // patch.display.DrawPixel(110, barsBottom - 1, positive);
+                    // patch.display.DrawPixel(127, currentBarHeight, positive);
                 }
             }
         }
 
         // knob labels & numeric values
         patch.display.SetCursor(0, 0);
-        patch.display.WriteString(&controlLabelStrs[0][0], Font_6x8, selected(Params::DRY_WET_XFADE));
+        patch.display.WriteString(&controlLabelStrs[0][0], Font_6x8, selected(Params::MIX_XFADE));
         patch.display.SetCursor(4, 12);
         char val[2];
-        floatToPercent(val, patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(Params::DRY_WET_XFADE)));
-        patch.display.WriteString(val, Font_6x8, noFill);
+        floatToPercent(val, patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(Params::MIX_XFADE)));
+        patch.display.WriteString(val, Font_6x8, positive);
 
         patch.display.SetCursor(20, 0);
         patch.display.WriteString(&controlLabelStrs[1][0], Font_6x8, selected(Params::INPUT_AMP));
         patch.display.SetCursor(24, 12);
         floatToPercent(val, patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(Params::INPUT_AMP)));
-        patch.display.WriteString(val, Font_6x8, noFill);
+        patch.display.WriteString(val, Font_6x8, positive);
 
         patch.display.SetCursor(40, 0);
-        patch.display.WriteString(&controlLabelStrs[2][0], Font_6x8, selected(Params::SPD_VAR));
+        patch.display.WriteString(&controlLabelStrs[2][0], Font_6x8, selected(Params::LOOP_AMP));
         patch.display.SetCursor(44, 12);
-        floatToPercent(val, patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(Params::SPD_VAR)));
-        patch.display.WriteString(val, Font_6x8, noFill);
+        floatToPercent(val, patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(Params::LOOP_AMP)));
+        patch.display.WriteString(val, Font_6x8, positive);
 
         patch.display.SetCursor(60, 0);
         patch.display.WriteString(&controlLabelStrs[3][0], Font_6x8, selected(Params::RND_AMT));
         patch.display.SetCursor(64, 12);
         floatToPercent(val, patch.GetCtrlValue(static_cast<DaisyPatch::Ctrl>(Params::RND_AMT)));
-        patch.display.WriteString(val, Font_6x8, noFill);
+        patch.display.WriteString(val, Font_6x8, positive);
 
         // rec label
         patch.display.SetCursor(80, 0);
         patch.display.WriteString(&controlLabelStrs[4][0], Font_6x8,  selected(Params::RECORD_TOGGLE));
         // rec icon
-        patch.display.DrawCircle(89, 16, 5, noFill);
-        patch.display.DrawCircle(89, 16, 3, noFill);
-        patch.display.DrawCircle(89, 16, 2, rec);
-        patch.display.DrawCircle(89, 16, 1, rec);
-        patch.display.DrawCircle(89, 16, 0, rec);
+        patch.display.DrawCircle(89, 16, 5, positive);
+        patch.display.DrawCircle(89, 16, 3, positive);
+        patch.display.DrawCircle(89, 16, 2, recToggle);
+        patch.display.DrawCircle(89, 16, 1, recToggle);
+        patch.display.DrawCircle(89, 16, 0, recToggle);
 
         // play/stop label
         patch.display.SetCursor(100, 0);
@@ -281,10 +311,10 @@ void DisplayControls()
         char* playModeStr = &modeStrs[1][0];
         if (play) {
             patch.display.SetCursor(104, 12);
-            patch.display.WriteString(playModeStr, Font_7x10, noFill);
+            patch.display.WriteString(playModeStr, Font_7x10, positive);
         } else {
-            patch.display.DrawRect(102, 11, 112, 21, noFill);
-            // patch.display.WriteString(stopModeStr, Font_7x10, noFill);
+            patch.display.DrawRect(102, 11, 112, 21, positive);
+            // patch.display.WriteString(stopModeStr, Font_7x10, positive);
         }
 
         // clear label
@@ -292,11 +322,11 @@ void DisplayControls()
         patch.display.WriteString(&controlLabelStrs[6][0], Font_6x8,  selected(Params::CLEAR_BTN));
         // clear icon
         char* clearModeStr = &modeStrs[0][0];
-        if (res) {
-            patch.display.SetCursor(85, 42);
-            patch.display.WriteString(clearModeStr, Font_7x10, noFill);
+        if (resettingBuffer()) {
+            patch.display.DrawCircle(89, 45, 5, positive);
         } else {
-            patch.display.DrawCircle(89, 45, 5, noFill);
+            patch.display.SetCursor(85, 42);
+            patch.display.WriteString(clearModeStr, Font_7x10, positive);
         }
 
         patch.display.Update();
@@ -306,9 +336,20 @@ void DisplayControls()
 
 bool selected(int idx)
 {
-    return (idx == selectedParamIdx) ? fill : noFill;
+    return (idx == selectedParamIdx) ? negative : positive;
 }
-
+bool recordToggled()
+{
+    return rec ? positive : negative;
+}
+bool playToggled()
+{
+    return play ? positive : negative;
+}
+bool resettingBuffer()
+{
+    return bufferReset? positive : negative;
+}
 void floatToPercent(char* buff, float val)
 {
     int percent = static_cast<int>(100 * val);

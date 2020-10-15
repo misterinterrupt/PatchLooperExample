@@ -8,6 +8,8 @@
 #define MAX_RECORD_SIZE (SAMPLE_RATE * 60 * 5) // 5 minutes of floats at 48 khz
 #define VOICE_SIZE (SAMPLE_RATE / VOICE_LENGTH_SECONDS) // 
 #define INVERT_SCREEN true
+#define INPUT_GAIN_TRIM 1.10
+#define LOOP_GAIN_TRIM 1.25
 
 enum Params {
     MIX_XFADE = 0,
@@ -104,6 +106,9 @@ void ResetBuffer()
 {
     first = true;
     bufferReset = true; // this is only set for the clear button's icon 
+    if(!play) {
+        playPosition = 0;
+    }
     recordPosition = 0;
     recordingLength = 0;
 
@@ -119,9 +124,9 @@ void ResetBuffer()
 void UpdateButtons()
 {
     // encoder held
-    if(patch.encoder.TimeHeldMs() >= 850)
+    if(patch.encoder.TimeHeldMs() >= 1000)
     {
-        if(selected(Params::PLAY_TOGGLE)) {
+        if(selected(Params::RECORD_TOGGLE)) {
             if(!play && !rec) // length is set when recording has ended for the 'first' loop 
             {
                 syncRecordPlay = true;
@@ -169,8 +174,8 @@ void Controls()
     patch.DebounceControls();
 
     xFadeMix = patch.controls[patch.CTRL_1].Process();
-    inputLevel = patch.controls[patch.CTRL_2].Process();
-    loopLevel = patch.controls[patch.CTRL_3].Process();
+    inputLevel = patch.controls[patch.CTRL_2].Process() * INPUT_GAIN_TRIM;
+    loopLevel = patch.controls[patch.CTRL_3].Process() * LOOP_GAIN_TRIM;
 
     UpdateButtons();
 }
@@ -193,7 +198,7 @@ void NextSamples(float &output, float* in, size_t i)
     // send the loop to the output
     output = buf[playPosition]; // output is just the loop signal now
     
-    // automatic looptime
+    // automatically set loop length if we max out the total loop time (defined at top of file)
     if(recordingLength >= MAX_RECORD_SIZE) {
         first = false;
         loopLength = MAX_RECORD_SIZE;
@@ -206,18 +211,19 @@ void NextSamples(float &output, float* in, size_t i)
     }
     if(rec && play) {
         recordPosition = playPosition;
-    } else if(rec) {
+    }
+    if(rec && !play) {
         // **Strange Feature** additive punch in when recording while playback stopped
         recordPosition++;
         recordPosition %= recordingLength;
     }
 
-    // when recording, the input is not going to play thru output
+    // we don't mix the input into the output when recording. Instead, it is routed to the loop which is monitored at the output
     if(rec) {
         output = output * xFadeMix; // output is the loop output adjusted by the xFade mix
     }
-    // when recording stops, the input is going to play thru output
-    // TODO:: set loopLevel to 1.0 when recording stops (depends on knob value takeover mode)
+    // when recording stops, the loop and the input are routed thru the output and the levels should be the same
+    // TODO:: set loopLevel to 1.0 when recording stops (depends on future implementation of knob value takeover mode)
     if(!rec) {
         output = ((output * loopLevel) * xFadeMix) + ((in[i] * inputLevel) * (1 - xFadeMix));
     }

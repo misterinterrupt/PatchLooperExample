@@ -8,6 +8,7 @@
 #define MAX_RECORD_SIZE (SAMPLE_RATE * 60 * 5) // 5 minutes of floats at 48 khz
 #define VOICE_SIZE (SAMPLE_RATE / VOICE_LENGTH_SECONDS) // 
 #define INVERT_SCREEN true
+#define ENCODER_LONG_PRESS_TIME 666
 #define INPUT_GAIN_TRIM 1.10
 #define LOOP_GAIN_TRIM 1.25
 
@@ -39,10 +40,13 @@ int   numParams                 = 7; // number of parameters
 bool  editingSelectedParam      = false; // selecting a control with a numeric value and clicking the encoder allows turning the encoder to change the value
 bool  first                     = true;  // first loop (sets length)
 bool  rec                       = false; // true = currently recording
+bool  syncRecordPlay            = false; // start playback when recording starts
+bool  unsyncRecordPosition      = false;
 bool  play                      = false; // true = currently playing
-bool  syncRecordPlay            = false;
+bool  skipPlayPress             = false; // prevent rising edge from changing play state after encoder long press
 bool  bufferReset               = false; // reset/clear loop mode toggle
 bool  allowBufferReset          = true;  // variable used to stop repeated resets while holding down encoder
+bool  savedPlayState            = false;
 bool  positive                  = INVERT_SCREEN ? false : true; // draws text, lines, shapes, pixels on the background
 bool  negative                  = INVERT_SCREEN ? true : false; // fills the background, if used for text, prints text in an inverted box (i.e. if text is selected)
 int   playPosition              = 0;
@@ -104,33 +108,38 @@ int main(void)
 //Resets the buffer
 void ResetBuffer()
 {
-    first = true;
     bufferReset = true; // this is only set for the clear button's icon 
-    if(!play) {
-        playPosition = 0;
-    }
+    play = false;
+    playPosition = 0;
     recordPosition = 0;
     recordingLength = 0;
-
+    first = true;
+    unsyncRecordPosition = false;
     // set buffer to all 0's
     for(int i = 0; i < MAX_RECORD_SIZE; i++)
     {
         buf[i] = 0;
     }
     loopLength = MAX_RECORD_SIZE;
-    allowBufferReset = false; // reset won't repeat while the encoder is held down
 }
 
 void UpdateButtons()
 {
     // encoder held
-    if(patch.encoder.TimeHeldMs() >= 1000)
+    if(patch.encoder.TimeHeldMs() >= ENCODER_LONG_PRESS_TIME)
     {
         if(selected(Params::RECORD_TOGGLE)) {
             if(!play && !rec) // length is set when recording has ended for the 'first' loop 
             {
                 syncRecordPlay = true;
             }
+        }
+        if(selected(Params::PLAY_TOGGLE)) {
+            if(!skipPlayPress) {
+                playPosition = 0;
+                unsyncRecordPosition = true;
+            }
+            skipPlayPress = true;
         }
     }
     // encoder pressed - plays recording
@@ -148,18 +157,24 @@ void UpdateButtons()
             rec = !rec;
         }
         if(selected(Params::PLAY_TOGGLE)) {
-            play = !play;
+            if(!skipPlayPress) {
+                play = !play;
+            }
+            skipPlayPress = false;
         }
-        if(selected(Params::CLEAR_BTN)) {
-            bufferReset = false;
-            allowBufferReset = true;
-        }
-    }
-    if(patch.encoder.RisingEdge()) {
         if(selected(Params::CLEAR_BTN)) {
             if(allowBufferReset) {
                 ResetBuffer();
             }
+            allowBufferReset = false; // reset won't repeat while the encoder is held down
+            play = savedPlayState;
+        }
+    }
+    if(patch.encoder.RisingEdge()) {
+        if(selected(Params::CLEAR_BTN)) {
+            allowBufferReset = true;
+            savedPlayState = play;
+            play = false;
         }
     }
     //encoder changes the selected param
@@ -209,10 +224,10 @@ void NextSamples(float &output, float* in, size_t i)
         playPosition++;
         playPosition %= loopLength;
     }
-    if(rec && play) {
+    if(rec && play && !unsyncRecordPosition) {
         recordPosition = playPosition;
     }
-    if(rec && !play) {
+    if(rec && (!play || unsyncRecordPosition)) {
         // **Strange Feature** additive punch in when recording while playback stopped
         recordPosition++;
         recordPosition %= recordingLength;

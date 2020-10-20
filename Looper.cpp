@@ -9,7 +9,7 @@
 #define VOICE_SIZE (SAMPLE_RATE / VOICE_LENGTH_SECONDS) // 
 #define INVERT_SCREEN true
 #define ENCODER_LONG_PRESS_TIME 666
-#define INPUT_GAIN_TRIM 1.10
+#define INPUT_GAIN_TRIM 1.0
 #define LOOP_GAIN_TRIM 1.25
 
 enum Params {
@@ -46,7 +46,7 @@ bool  play                      = false; // true = currently playing
 bool  skipPlayPress             = false; // prevent rising edge from changing play state after encoder long press
 bool  bufferReset               = false; // reset/clear loop mode toggle
 bool  allowBufferReset          = true;  // variable used to stop repeated resets while holding down encoder
-bool  savedPlayState            = false;
+// bool  savedPlayState            = false;
 bool  positive                  = INVERT_SCREEN ? false : true; // draws text, lines, shapes, pixels on the background
 bool  negative                  = INVERT_SCREEN ? true : false; // fills the background, if used for text, prints text in an inverted box (i.e. if text is selected)
 int   playPosition              = 0;
@@ -146,7 +146,7 @@ void UpdateButtons()
     if(patch.encoder.FallingEdge())
     {
         if(selected(Params::RECORD_TOGGLE)) {
-            if(first && rec) // length is set when recording has ended for the 'first' loop 
+            if(first && rec && play) // length is set when recording has ended for the 'first' loop 
             {
                 first = false;
             }
@@ -161,19 +161,22 @@ void UpdateButtons()
                 play = !play;
             }
             skipPlayPress = false;
+            if(recordingLength > 0) { // some kind of recording has happened
+                first = false;
+            }
         }
         if(selected(Params::CLEAR_BTN)) {
             if(allowBufferReset) {
                 ResetBuffer();
             }
             allowBufferReset = false; // reset won't repeat while the encoder is held down
-            play = savedPlayState;
+            // play = savedPlayState;
         }
     }
     if(patch.encoder.RisingEdge()) {
         if(selected(Params::CLEAR_BTN)) {
             allowBufferReset = true;
-            savedPlayState = play;
+            // savedPlayState = play;
             play = false;
         }
     }
@@ -234,18 +237,18 @@ void NextSamples(float &output, float* in, size_t i)
     }
 
     // we don't mix the input into the output when recording. Instead, it is routed to the loop which is monitored at the output
-    if(rec) {
-        output = output * xFadeMix; // output is the loop output adjusted by the xFade mix
-    }
+    // if(rec) {
+        // output = output * xFadeMix; // output is the loop output adjusted by the xFade mix
+    // }
     // when recording stops, the loop and the input are routed thru the output and the levels should be the same
     // TODO:: set loopLevel to 1.0 when recording stops (depends on future implementation of knob value takeover mode)
-    if(!rec) {
+    // if(!rec) {
         output = ((output * loopLevel) * xFadeMix) + ((in[i] * inputLevel) * (1 - xFadeMix));
-    }
+    // }
 }
 
 // top left is y:0 x:0
-// This will render the display with control values as vertical bars
+// This will render the display
 void DisplayControls()
 {
     size_t maxHeight = SSD1309_HEIGHT / 2;

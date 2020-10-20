@@ -1,6 +1,6 @@
 # Project Name
-TARGET = ex_Looper
-
+TARGET = Looper
+DEBUG = 1
 # Sources
 CPP_SOURCES = Looper.cpp
 # asm (".global _printf_float");

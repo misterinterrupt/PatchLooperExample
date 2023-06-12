@@ -2,7 +2,8 @@
 #include "daisysp.h"
 #include "daisy_patch.h"
 
-#define MAX_SIZE (48000 * 60 * 5) // 5 minutes of floats at 48 khz
+#define MAX_SIZE (48000 * 60 * 2.5) // 2.5 minutes of floats at 48 khz
+//reduced from 5 minutes to account for stereo operation
 
 using namespace daisysp;
 using namespace daisy;
